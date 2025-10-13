@@ -1,0 +1,5 @@
+{
+  "DAILY_REWARD": 1000,
+  "QUIZ_REWARD": 5000,
+  "QUIZ_TIMEOUT_SEC": 5
+}
