@@ -16,6 +16,8 @@ YTDL_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "noplaylist": True,
+    "extract_flat": False,
+    "cachedir": False,
 }
 # 유튜브 스트림 끊김 대비 재연결 옵션
 FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
@@ -52,6 +54,28 @@ def _save_volume(guild_id: int, v: float) -> None:
         pass
 
 
+def _pick_best_audio(info: dict) -> str | None:
+    """yt-dlp info에서 재생 가능한 오디오 스트림 URL을 고른다(PCM로 디코딩 예정)."""
+    # 직접 url이 있으면 우선 사용
+    url = info.get("url")
+    if url:
+        return url
+
+    formats = info.get("formats") or []
+    # 오디오 전용(vcodec=none) & 오디오 코덱 존재하는 것만
+    audio_formats = [f for f in formats if (f.get("vcodec") in (None, "none")) and (f.get("acodec") not in (None, "none")) and f.get("url")]
+    if audio_formats:
+        # abr(오디오 비트레이트) 높은 순으로
+        audio_formats.sort(key=lambda f: (f.get("abr") or 0, f.get("asr") or 0), reverse=True)
+        return audio_formats[0]["url"]
+
+    # 그래도 없으면 첫 포맷의 URL
+    for f in formats:
+        if f.get("url"):
+            return f["url"]
+    return None
+
+
 # =========================
 # 플레이어
 # =========================
@@ -66,13 +90,7 @@ class GuildPlayer:
         self.volume = _load_volume(guild.id)
 
     async def ensure_voice(self, channel: discord.abc.Connectable):
-        """
-        음성/스테이지 채널 연결/이동 (매우 견고)
-        - 길드의 기존 voice_client 우선 사용
-        - 실패 시 완전 분리 후 재연결
-        - 최대 5회 재시도 (IndexError/Timeout 등 포함)
-        - 스테이지 채널이면 발언 요청 시도
-        """
+        """음성/스테이지 채널 연결/이동 (강화된 재시도)"""
         perms = channel.permissions_for(self.guild.me)
         if not perms.connect:
             raise PermissionError("봇에 '연결' 권한이 없습니다.")
@@ -113,11 +131,9 @@ class GuildPlayer:
                     await channel.guild.me.edit(suppress=False)
 
     async def extract(self, query: str) -> dict:
-        """yt-dlp 추출 (스레드 풀) — 검색 0건/None 결과도 처리"""
+        """yt-dlp 추출 (스레드 풀) — 검색 0건/None 결과 처리"""
         loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(
-            None, functools.partial(ytdl.extract_info, query, download=False)
-        )
+        data = await loop.run_in_executor(None, functools.partial(ytdl.extract_info, query, download=False))
         if not data:
             raise LookupError("추출 실패(콘텐츠를 가져올 수 없음)")
         if "entries" in data:
@@ -125,9 +141,11 @@ class GuildPlayer:
             if not entries:
                 raise LookupError("검색 결과 없음")
             data = entries[0]
-        # url이 없으면 무효
-        if not data.get("url"):
-            raise LookupError("유효한 스트림 URL이 없습니다.")
+        # 스트림 URL 확보
+        stream_url = _pick_best_audio(data)
+        if not stream_url:
+            raise LookupError("유효한 오디오 스트림을 찾을 수 없습니다.")
+        data["__stream_url"] = stream_url
         return data
 
     async def play_next(self, *, ch: discord.abc.Messageable | None):
@@ -145,9 +163,16 @@ class GuildPlayer:
             info = self.queue.pop(0) if self.queue else self.current
 
         self.current = info
-        stream_url = info.get("url")
+        stream_url = info.get("__stream_url") or _pick_best_audio(info)
+        if not stream_url:
+            if ch:
+                with contextlib.suppress(Exception):
+                    await ch.send("이 트랙은 재생 가능한 오디오 스트림이 없습니다. 다음 곡으로 넘어갑니다.")
+            if self.queue:
+                await self.play_next(ch=ch)
+            return
 
-        # PCM + 볼륨 조절(오디오 소스는 Opus가 아니어야 함)
+        # 항상 PCM으로 재생(볼륨 조절 가능, Opus 인코딩 소스 금지)
         source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTS)
         wrapped = discord.PCMVolumeTransformer(source, volume=self.volume)
 
@@ -231,7 +256,6 @@ class Music(commands.Cog):
 
         p = self.player(ctx.guild)
 
-        # 음성 연결
         try:
             await p.ensure_voice(ctx.author.voice.channel)
         except PermissionError as e:
@@ -241,12 +265,10 @@ class Music(commands.Cog):
         except Exception:
             return await ctx.reply("음성 채널 연결에 실패했습니다. 다른 채널로 시도하거나 잠시 후 다시 시도해 주세요.")
 
-        # 검색어 준비
         q = query.strip()
         if not q.startswith("http"):
-            q = f"ytsearch5:{q}"
+            q = f"ytsearch10:{q}"
 
-        # 정보 추출
         try:
             info = await p.extract(q)
         except LookupError as e:
@@ -254,11 +276,9 @@ class Music(commands.Cog):
         except Exception as e:
             return await ctx.reply(f"검색/추출 실패: {type(e).__name__}: {e}")
 
-        # 큐 추가
         p.queue.append(info)
         await ctx.reply(f"➕ 대기열 추가: **{info.get('title','(제목없음)')}**")
 
-        # 재생 시작
         if p.voice and not p.voice.is_playing() and not p.voice.is_paused():
             try:
                 await p.play_next(ch=ctx.channel)
@@ -319,7 +339,6 @@ class Music(commands.Cog):
         v = max(0, min(150, int(vol))) / 100
         p.volume = v
         _save_volume(ctx.guild.id, v)
-        # 현재 재생 중인 소스에 즉시 반영
         if p.voice and p.voice.source and isinstance(p.voice.source, discord.PCMVolumeTransformer):
             p.voice.source.volume = v
         await ctx.reply(f"🔊 볼륨: **{int(v*100)}%** (서버에 저장됨)")
