@@ -1,52 +1,84 @@
-import os, asyncio, traceback, discord
-from dotenv import load_dotenv
+import os
+import json
+import asyncio
+import traceback
+import discord
 from discord.ext import commands
+from dotenv import load_dotenv
 
+# .env 로드
 load_dotenv()
+
 TOKEN = os.getenv("DISCORD_TOKEN")
-PREFIX = os.getenv("BOT_PREFIX", "!")
+DEFAULT_PREFIX = os.getenv("BOT_PREFIX", "!")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
 OWNER_ID = os.getenv("OWNER_ID")
 
 if not TOKEN:
-    raise SystemExit("❌ DISCORD_TOKEN이 설정되지 않았습니다. .env를 확인하세요.")
+    raise SystemExit("❌ DISCORD_TOKEN이 설정되지 않았습니다. .env 파일을 확인하세요.")
+
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+PREFIX_PATH = os.path.join(DATA_DIR, "prefixes.json")
+
+def load_prefix_map():
+    if not os.path.exists(PREFIX_PATH):
+        return {}
+    try:
+        with open(PREFIX_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def get_prefix(bot, message):
+    # DM 이면 기본 접두사
+    if not message.guild:
+        return DEFAULT_PREFIX
+    mp = load_prefix_map()
+    return mp.get(str(message.guild.id), DEFAULT_PREFIX)
 
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
-INTENTS.members = True
 INTENTS.guilds = True
-INTENTS.reactions = True
+INTENTS.members = True
+INTENTS.messages = True
 INTENTS.voice_states = True
 
-bot = commands.Bot(command_prefix=PREFIX, intents=INTENTS, help_command=None)
+bot = commands.Bot(command_prefix=get_prefix, intents=INTENTS, help_command=None)
 bot.config = {
-    "prefix": PREFIX,
-    "openai_api_key": (OPENAI_KEY or "").strip(),
+    "default_prefix": DEFAULT_PREFIX,
+    "openai_api_key": OPENAI_KEY,
     "owner_id": int(OWNER_ID) if OWNER_ID and OWNER_ID.isdigit() else None
 }
 
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
-    await bot.change_presence(activity=discord.Game(name=f"{PREFIX}도움말 / {PREFIX}help"))
 
+@bot.event
 async def load_cogs():
-    exts = (
-        # 기본/유틸
-        "cogs.basic","cogs.chat","cogs.announce","cogs.admin","cogs.profile",
-        # 경제/게임
-        "cogs.economy","cogs.gamble","cogs.minigames","cogs.level","cogs.stock","cogs.economy_plus","cogs.shop","cogs.lottery",
-        # 음악
+    # 필요한 코그를 등록하세요. (추가/삭제 자유)
+    for ext in (
+        "cogs.basic",
+        "cogs.chat",
+        "cogs.announce",
+        "cogs.gamble",
         "cogs.music",
-        # 운영/보안/자동화
-        "cogs.ticket","cogs.logger","cogs.reminder","cogs.moderation","cogs.stats","cogs.welcome","cogs.gpttoggle","cogs.help",
-    )
-    for ext in exts:
+        "cogs.quiz",            # 있으면 유지, 없으면 자동 무시
+        "cogs.economy",
+        "cogs.economy_plus",
+        "cogs.stock",
+        "cogs.shop",
+        "cogs.lottery",
+        "cogs.prefix",          # ← 접두사 관리
+        "cogs.help",            # ← 자동 도움말
+    ):
         try:
             await bot.load_extension(ext)
-            print("Loaded cog:", ext)
+            print(f"Loaded cog: {ext}")
         except Exception as e:
-            print("Failed:", ext, e); traceback.print_exc()
+            print(f"Failed to load {ext}: {e}")
+            traceback.print_exc()
 
 async def main():
     async with bot:
