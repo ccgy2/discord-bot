@@ -11,14 +11,16 @@ from yt_dlp import YoutubeDL
 # =========================
 # YT-DLP / FFmpeg 설정
 # =========================
-YTDL_OPTS = {
+YTDL_OPTIONS = {
     "format": "bestaudio/best",
     "quiet": True,
     "no_warnings": True,
+    "default_search": "ytsearch",
     "noplaylist": True,
-    "extract_flat": False,
-    "cachedir": False,
+    "source_address": "0.0.0.0",
+    "cookiefile": "cookies.txt"  # ← 이 줄 추가
 }
+
 # 유튜브 스트림 끊김 대비 재연결 옵션
 FFMPEG_BEFORE = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 FFMPEG_OPTS = {"before_options": FFMPEG_BEFORE, "options": "-vn"}
@@ -369,3 +371,4 @@ class Music(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Music(bot))
+
