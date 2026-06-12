@@ -1,7 +1,7 @@
 {
   "1425353464610947154": {
-    "ticket_price": 500,
-    "jackpot": 5000,
+    "ticket_price": 10000,
+    "jackpot": 100000,
     "tickets": [
       {
         "user_id": "742989026625060914",
